@@ -1,0 +1,1387 @@
+---
+title: "tree"
+output: html_document
+date: '2022-04-13'
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+require(svMisc)
+setwd(dir = "~/LuberLab/crispri/")
+ten <- function(x) { print(x[1:10,1:10])} #easy function so don't have to type as much
+
+```
+
+
+We need to import the tree and test grabbing the nodes information
+
+```{r}
+require(ape)
+require(TreeTools)
+require(phytools)
+require(Biostrings)
+
+tree <- read.newick(file = "./ERFtree.nwk")
+labels <- TipLabels(tree)
+
+
+ERF <- readDNAStringSet(filepath = "./ERFgenes.fa",use.names = T,format = "fasta")
+
+reorgERF <- ERF[labels]
+writeXStringSet(reorgERF,filepath = "./ERFmeme",format = "fasta")
+
+
+plot(tree)
+```
+
+Now also try to pull the data out of the tree we want a df of genes x nodes 
+```{r}
+require(tidytree)
+# 
+# ttree <- as_tibble(tree)
+# ttree
+# nnodes <- max(ttree$node)
+# 
+# mat <- matrix(ncol = nnodes,nrow = length(labels))
+# mat[,] <- F
+# colnames(mat) <- seq(1:nnodes)
+# nodesdf <- cbind(as.data.frame(labels),as.data.frame(mat))
+# nodesdf[1:10,1:10]
+# 
+# nodesfill <- nodesdf
+# for (x in 1:nnodes) {
+#   dat <- as.data.frame(offspring(ttree,x))
+#   if (nrow(dat) == 0){
+#     row <- which(nodesfill$labels == as.data.frame(ttree)[x,4])
+#     nodesfill[row,x] <- T
+#     
+#   } else {
+#     for(x in 1:nrow(dat)){
+#       lab <- dat[x,4]
+#       if(!any(nodesfill$labels == lab)) { } else {
+#         row <- which(nodesfill$labels == lab)
+#         nodesfill[row,x] <- T
+#       }
+#     }
+#   }
+# }
+
+
+```
+
+
+```{r}
+require(tidytree)
+require(TreeTools)
+flattenNodes <- function(tree) {
+  print("FirstMark")
+  ttree <- as_tibble(tree)
+  
+  nnodes <- max(ttree$node)
+  labels <- TipLabels(tree)
+  mat <- matrix(ncol = nnodes,nrow = length(labels),data = F)
+  colnames(mat) <- seq(1:nnodes)
+  rownames(mat) <- labels
+  # nodesdf <- cbind(as.data.frame(labels),as.data.frame(mat))
+  # nodesdf[1:10,1:10]
+  
+  nodesfill <- as.data.frame(mat)
+  for (x in 1:nnodes) {
+    dat <- as.data.frame(offspring(ttree,x))
+    if (nrow(dat) == 0){
+      # row <- which(nodesfill$labels == as.data.frame(ttree)[x,4])
+      nodesfill[as.data.frame(ttree)[x,4],x] <- T
+    } else {
+      for(i in 1:nrow(dat)){
+        lab <- dat[i,4]
+        if (is.null(lab) | is.na(lab)) { next; }
+        if(!any(labels == lab)) { } else {
+          # row <- which(nodesfill$labels == lab)
+          nodesfill[lab,x] <- T
+        }
+      }
+    }
+  }
+  return(nodesfill)
+}
+```
+
+Sweet, now we should be able to plug any and all trees into this and then get a df that is all the nodes by genes, lets try it once:
+
+```{r}
+flattree <- flattenNodes(tree)
+flattree[1:10,1:10]
+```
+
+Go ahead and write a function to extract the block diagram data:
+
+```{r}
+# require(stringi)
+# block <- read.table(file = "./MastBlockexample.txt",header = F,sep = ",")
+# 
+# blockTable <- function(block) {
+#   genes <- unique(block$V1)
+#   motiflist <- strsplit(block$V3,split = "-")
+#   motiflist <- lapply(motiflist,function(x) gsub("[","",x,fixed=T))
+#   motiflist <- lapply(motiflist,function(x) gsub("]","",x,fixed=T))
+#   motiflist <- lapply(motiflist,function(x) gsub("<","",x,fixed=T))
+#   motiflist <- lapply(motiflist,function(x) gsub(">","",x,fixed=T))
+#   motiflist <- lapply(motiflist,function(x) gsub("+","",x,fixed=T))
+#   motiflist <- lapply(motiflist,function(x) gsub("-","",x,fixed=T))
+#   
+# }
+```
+
+Extract from hit list
+
+```{r}
+hitlist <- read.csv(file = "./hitlistexample.txt",header = F, sep = ",")
+head(hitlist)
+
+hitTable <- function(list,present){
+  genes <- unique(list$sequence_name)
+  motifs <- unique(list$motif_alt_id)
+  mat <- matrix(ncol = length(motifs),nrow = length(genes),data = 0)
+  colnames(mat) <- motifs
+  rownames(mat) <- genes
+  for (i in 1:nrow(list)){
+    gene <- list[i,3]
+    motif <- list[i,2]
+    mat[gene,motif] =+ 1
+  }
+  if(present) { mat <- mat > 0; }
+  return(as.data.frame(mat))
+}
+hitTable(hitlist,present = T)
+```
+
+Lastly, we then prepare the node dataset using the hitlist result as well
+
+```{r}
+head(hitlist)
+################This first function gets the nodes into a list, with each entry being a node containing a character vector of the motifs contained
+nodeList <- function(nodes,hits) {
+  nodenames <- paste("n",colnames(nodes),sep="")
+  nlist <- as.list(nodenames)
+  names(nlist) <- nodenames
+  for (i in 1:ncol(nodes)){
+    #print(i)
+    qgenes <- rownames(nodes)[which(nodes[,i] == T)]
+    if (length(qgenes)==0) { next; }
+    motifs <- unique(hits[hits$sequence_name %in% qgenes,]$motif_alt_id)
+    if (length(motifs)==0) { next; }
+    nlist[nodenames[i]] <- unique(hits[hits$sequence_name %in% qgenes,]$motif_alt_id)
+  }
+  return(nlist)
+}
+nodeMotifs <- nodeList(flattree,hitlist)
+head(nodeMotifs)
+##############
+#############Now we make a function that gives us a table with either presence of the nodes or the number of motifs in each node
+nodeTable <- function(list,hits,present) {
+  nodenames <- names(list)
+  genes <- unique(hits$sequence_name)
+  mat <- matrix(ncol = length(nodenames), nrow = length(genes),data = 0)
+  colnames(mat) <- nodenames
+  rownames(mat) <- genes
+  for (i in nodenames) {
+    for (p in genes) {
+      motifs <- hits[hits$sequence_name %in% p,]$motif_alt_id
+      mat[p,i] =+ sum(motifs %in% list[i])
+    }
+    progress(i,length(nodenames))
+  }
+  if(present) { mat <- mat > 0; }
+  return(as.data.frame(mat))
+}
+##########These functions are good for new data that we are testing but it can falsely attribute genes to nodes when we know there is no direct phylogenetic relationship
+```
+
+
+
+Here we look at information from KEGG
+
+```{r}
+bact <- read.table(file = "./KEGGBact.tsv",header = F,sep = "\t")
+head(bact)
+#5,791 species
+
+Bint <- read.csv(file = "./bintGenes",header = F,sep =" ")
+head(Bint)
+#4,746 genes
+
+nrow(Bint)
+nrow(Bint[Bint$V2=="no_KO_assigned",])
+tail(sort(table(Bint$V2)))
+4746-(2661 + 228)
+#B int should have 1,857 KO annotated genes
+
+length(grep("EC:",Bint$V2))
+#965 genes have EC ID pathway annotations
+```
+
+
+
+
+
+#EcoBisTest
+#################################################################################################################3
+############################## Bis Eco Subset ###################################################################
+##################################################################################################################
+
+
+So now we have the sequence data for Bis and Eco so let us read that in.
+
+```{r}
+info <- read.table(file = "./EcoBisTest/EcoBis.csv",header = T, sep = ",")#Let's get gene name without "bis:" because mafft is just cutting it off
+head(info)
+par(mfrow = c(1,2))
+hist(table(info[info$ec_id != "",]$ec_id), main = "EC_ID Class Bias")
+hist(table(info[!info$map_id %in% c("","NAN"),]$map_id),main = "Map_ID Class Bias")
+par(mfrow = c(1,1))
+```
+
+
+We want to first run it through MAFFT to get the alignment file.
+mafft --thread 12 ecobisProt.fa > ecobisProt.aln
+
+```{r}
+require(ape)
+require(phangorn)
+require(seqinr)
+
+bisecoaln <- read.alignment(file = "./EcoBisTest/ecobisProt.aln",format = "fasta") #need to output fasta or cuts off name
+dist <- dist.alignment(bisecoaln)
+testree <- njs(dist)
+write.tree(testree,"./EcoBisTree.nwk")
+```
+
+
+Now we have the tree let us start getting the data sets in order
+```{r}
+flattree <- flattenNodes(testree)
+colnames(flattree) <- paste("n",colnames(flattree),sep = "")
+flattree[1:10,1:10]
+Nodes.Present <- flattree
+#That is working so we have the tree into a node format
+```
+
+We also have to make a function that will quickly spit out the number of motifs in each gene under the tree node.
+
+```{r}
+ten(Nodes.Present)
+flatCount <- function(flat,hits) {
+  mat <- matrix(nrow = nrow(flat), ncol = ncol(flat), data = 0)
+  colnames(mat) <- colnames(flat)
+  rownames(mat) <- rownames(flat)
+  for (i in 1:nrow(flat)) {
+    gene <- rownames(flat)[i]
+    nmotif <- nrow(hits[hits$sequence_name == gene,])
+    mat[i,which(flat[i,] == T)] <- nmotif
+    progress(i,nrow(flat))
+  }
+  return(mat)
+}
+Nodes.Number <- flatCount(Nodes.Present,fimo)
+ten(Nodes.Number)
+#And also a function that just grabs the 
+```
+
+
+Now let us read in the meme output
+
+```{r}
+fimo <- read.table(file= "./EcoBisTest/MAST/fimo.tsv",header = T,sep = "\t")
+head(fimo)
+fimo <- within(fimo,sp <- unlist(lapply(strsplit(fimo$sequence_name,split = ":"),function(x) x[[1]])))
+hist(table(subset(fimo,sp == "bis")$motif_alt_id),main = "B. intestinalis motif distribution")
+hist(table(subset(fimo,sp == "eco")$motif_alt_id),main = "E. coli motif distribution")
+Motif.Present <- hitTable(fimo,present = T)
+Motif.Number <- hitTable(fimo,present = F)
+head(Motif.Number)
+head(Motif.Present)
+####Okay cool, both of those work now and we have our first two training data sets
+```
+
+
+
+```{r}
+#This is the code that we would run on new data
+# nodemotifs <- nodeList(flattree,fimo)
+# Node.Present <- nodeTable(nodemotifs,fimo,present = T)
+# head(Node.Present)
+# Node.Present[1:10,1:10]
+
+```
+
+Lastly, we attach the predictor information to the datasets and write out:
+
+```{r}
+require(plyr)
+subinfo <- info[,c(1,3,4,7,8)]
+replace <- subinfo[subinfo$gene_id %in% rownames(Motif.Number),]
+rownames(replace) <- replace$gene_id
+Motif.Number.Anno <- cbind(replace,Motif.Number[replace$gene_id,])
+#####Now do the motif present
+replace <- subinfo[subinfo$gene_id %in% rownames(Motif.Present),]
+rownames(replace) <- replace$gene_id
+Motif.Present.Anno <- cbind(replace,Motif.Present[replace$gene_id,])
+
+Motif.Present.Anno[1:10,1:10]
+Motif.Number.Anno[1:10,1:10]
+
+
+######Now for the node data
+replace <- subinfo[subinfo$gene_id %in% rownames(Nodes.Number),]
+rownames(replace) <- replace$gene_id
+Nodes.Number.Anno <- cbind(replace,Nodes.Number[replace$gene_id,])
+#########And Node Present
+replace <- subinfo[subinfo$gene_id %in% rownames(Nodes.Present),]
+rownames(replace) <- replace$gene_id
+Nodes.Present.Anno <- cbind(replace,Nodes.Present[replace$gene_id,])
+#########Lastly make one for the flattree for just homology based prediction
+replace <- subinfo[subinfo$gene_id %in% rownames(flattree),]
+rownames(replace) <- replace$gene_id
+Tree.Present.Anno <- cbind(replace,flattree[replace$gene_id,])
+
+ten(Nodes.Number.Anno)
+ten(Nodes.Present.Anno)
+ten(Tree.Present.Anno)
+# write.table(Motif.Present.Anno,file = "./EcoBisTest/Motif_Present.tsv",sep = "\t",quote = F,row.names = F)
+# write.table(Motif.Number.Anno,file = "./EcoBisTest/Motif_Number.tsv",sep = "\t",quote = F,row.names = F)
+# write.table(Nodes.Present.Anno,file = "./EcoBisTest/Nodes_Present.tsv",sep = "\t",quote = F,row.names = F)
+# write.table(Nodes.Number.Anno,file = "./EcoBisTest/Nodes_Number.tsv",sep = "\t",quote = F,row.names = F)
+# write.table(Tree.Present.Anno,file = "./EcoBisTest/Tree_Present.tsv",sep = "\t",quote = F, row.names = F)
+```
+
+Here are the results from the models for the Eco bis subset:
+
+```{r}
+require(ggplot2)
+rf_model = rep(c("Motif_present","Motif_number","Nodes_present","Nodes_number"),3)
+rf_acc = c(6.824146981627297,4.724409448818897,13.131313131313133,12.121212121212121,
+           7.349081364829396,7.349081364829396,13.383838383838384,11.616161616161616,
+           31.026438569206842,31.642512077294686,18.62673484295106,15.997078159240322)
+TrainRes <- c(0.7898423817863398,0.7924693520140105,0.47848101265822784,0.41434599156118146,
+              0.7539404553415061,0.7732049036777583,0.4582278481012658,0.3848101265822785,
+              rep(NA,4))
+rf_predictor <- c(rep("EC_ID",4),rep("Map_ID_combined",4),rep("Map_ID_individual",4))
+EcobisRF.df <- data.frame(Method = rf_model,Predictor = rf_predictor,Result = rf_acc)
+ggplot(EcobisRF.df,aes(x = Method, y = Result)) +
+  facet_wrap(~Predictor) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle = 60,vjust = 1, hjust = 1)) +
+  ylab(label = "Accuracy (%)")
+
+
+```
+
+Its okay that our accuracy is low, because it will probably go up when we incorporate the 43 species into the analysis and we are also testing against a data set that might not be perfectly annotated. The real test will be if we run against a perfectly annotated data set of genes that could not have been mis annotated.
+
+```{r}
+
+# result <- c(92.6509186351706,7.349081364829396,91.86351706036746,
+#             92.6509186351706,7.349081364829396,91.86351706036746,
+#             86.61616161616162,13.383838383838384,86.61616161616162,
+#             88.38383838383838,11.616161616161616,88.38383838383838)
+# Model <- rep(c("Motif_present","Motif_number","Nodes_present","Nodes_number"),each = 3)
+# finding <- rep(c('Less','Equal','More'))
+# findings.df <- data.frame(Model = Model, Result = result, Finding = finding)
+# ggplot(findings.df,aes(x = Model, y = Result)) +
+#   facet_wrap(~Finding) +
+#   geom_bar(stat = "identity") +
+#   theme(axis.text.x = element_text(angle = 60,vjust = 1, hjust = 1)) +
+#   ylab(label = "(%) of genes")
+```
+
+It seems that the node based is less generalized and provides the dataset answer more of the time, which could be either bad or good we would have to see how it compares.
+
+Now let us see the importances for each model:
+```{r}
+require(reshape2)
+require(ggpubr)
+motif_imp <- read.csv(file = "~/LuberLab/crispri/EcoBisTest/Motif_importance.csv",header = T,sep = ",")
+nodes_imp <- read.csv(file = "~/LuberLab/crispri/EcoBisTest/Nodes_importance.csv",header = T,sep = ",")
+head(motif_imp)
+head(nodes_imp)
+motif_imp_long <- melt(motif_imp[,-1],id.vars = "Motif_Name",measure.vars = colnames(motif_imp)[3:ncol(motif_imp)],value.name = "Importance",variable.name = "Model")
+nodes_imp_long <- melt(nodes_imp[,-1],id.vars = "Nodes_Name",measure.vars = colnames(nodes_imp)[3:ncol(nodes_imp)],value.name = "Importance",variable.name = "Model")
+a <- ggplot(motif_imp_long,aes(x = Motif_Name,y = Importance,color = Model)) +
+  geom_point(stat = "identity")
+b <- ggplot(nodes_imp_long,aes(x = Nodes_Name,y = Importance,color = Model)) +
+  geom_point(stat = "identity")
+c <- ggplot(motif_imp_long,aes(x = Model,y = Importance,fill = Model)) +
+  geom_violin()+
+  theme(axis.text.x = element_text(angle = 60,vjust = .5))
+d <- ggplot(nodes_imp_long,aes(x = Model,y = Importance,fill = Model)) +
+  geom_violin()+
+  theme(axis.text.x = element_text(angle = 60,vjust = .5))
+ggarrange(a, b, c,d , 
+          labels = c("A", "B", "C","D"),
+          ncol = 2, nrow = 2)
+
+```
+
+Confusion Matrix
+
+```{r}
+require(gplots)
+confmat <- read.table(file = "EcoBisTest/Motif_num_confusion.csv",header = F,sep = ",")
+tmp <- apply(as.matrix(confmat),1,as.numeric)
+heatmap(tmp[-1,-1],Rowv = NA)
+```
+
+Log Loss:
+
+```{r}
+loss <- c(4.305709013968043,3.984779055145796,3.517048541623167,3.679297746178915,
+          4.777378760201549,5.019436414075275,4.332446404368004,4.427627830776111)
+Model <- rep(c("Motif_number","Motif_present","Nodes_number","Nodes_present"),2)
+predictor <- c(rep("EC ID",4),rep("Map ID combined",4))
+EcobisLoss.df <- data.frame(Model = Model, Log_Loss = loss, Predictor = predictor)
+ggplot(EcobisLoss.df,aes(x = Model, y = Log_Loss)) +
+  facet_wrap(~Predictor) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle = 60,vjust = 1, hjust = 1)) +
+  ylab(label = "Log Loss")
+
+# ada_score <-c(0.00985332182916307,0.01771786022433132,0.019687230371009494,0.02296807592752373,0.02230802415875755)
+# ada_depth <- c(1,3,6,9,12)
+```
+
+Now lets plot the results of the ADAboost trees.
+
+```{r}
+require(tidyr)
+ada_train <- c(93.34500875656742,93.95796847635727,58.90295358649789,56.87763713080168,
+               89.14185639229422,90.19264448336253,23.375527426160335,23.20675105485232)
+ada_test <- c(1.574803149606299,1.0498687664041995,8.080808080808081,7.828282828282829,
+              2.6246719160104988,1.0498687664041995,6.8181818181818175,6.313131313131313)
+ada_loss <- c(6.649269666903975,6.883513747390988,4.212237406005534,4.234130539692141,
+              7.087755014384876,7.276042964658349,5.18175028335019,5.1966185575841)
+ada_partial <- c(30.093312597200622,29.307568438003223,7.742878013148284,7.377647918188458)
+ada_model <- rep(c("Motif_number","Motif_present","Nodes_number","Nodes_present"),2)
+ada_predictor <- c(rep("EC_ID",4),rep("Map_ID_combined",4))
+EcoBisAda.df <- data.frame(Method = rep(c("Motif_number","Motif_present","Nodes_number","Nodes_present"),3), Predictor = c(ada_predictor,rep("Map_ID_individual",4)), Result = c(ada_test,ada_partial))
+AdaRes <- data.frame(Train = ada_train, Test = ada_test, Loss = ada_loss,Model = Model, Predictor = predictor)
+AdaResLong <- AdaRes %>% 
+  gather(Test,Result,-Model,-Predictor)
+AdaResLong$Test <- factor(AdaResLong$Test,levels = c('Train','Test','Loss'))
+
+
+ggplot(AdaResLong, aes(x = Model,y = Result)) +
+  geom_bar(stat = "identity",position = "dodge") +
+  facet_grid(Test~Predictor)
+
+
+AdaParRes <- data.frame(Model = Model[1:4],Accuracy = ada_partial)
+ggplot(AdaParRes,aes(x = Model,y = Accuracy))+
+  geom_bar(stat = 'identity')+
+  ggtitle(label = 'Adaboost partial accuracy')+
+  ylab('Accuracy (%)')
+
+```
+
+
+Read in the results for the gradient boosted trees
+
+```{r}
+hist_train <- c(92.81961471103327,93.52014010507881,0.7594936708860759,1.0970464135021099,
+                67.60070052539405,69.43957968476357,14.852320675105485,40.675105485232066)
+hist_test <- c(4.986876640419948,3.149606299212598,0,0.25252525252525254,
+               6.561679790026247,3.937007874015748,5.808080808080808,8.585858585858585)
+hist_loss <- c(6.249081312107145,6.817978785476383,22.904112608943016,22.938631797630553,
+               5.88255239019566,6.205620534313747,5.123315969752606,5.438831214396119)
+hist_partial <- c(34.914463452566096,33.41384863123994,36.742147552958365,37.47260774287801)
+hist_model <- rep(c("Motif_number","Motif_present","Nodes_number","Nodes_present"),2)
+hist_predictor <- c(rep("EC_ID",4),rep("Map_ID_combined",4))
+EcoBisHist.df <- data.frame(Method = rep(c("Motif_number","Motif_present","Nodes_number","Nodes_present"),3),Predictor = c(rep("EC_ID",4),rep("Map_ID_combined",4),rep("Map_ID_individual",4)), Result = c(hist_test,hist_partial))
+
+HistRes <- data.frame(Train = hist_train, Test = hist_test, Loss = hist_loss,Model = Model, Predictor = predictor)
+HistResLong <- HistRes %>% 
+  gather(Test,Result,-Model,-Predictor)
+HistResLong$Test <- factor(HistResLong$Test,levels = c('Train','Test','Loss'))
+HistResLong$Test <- factor(HistResLong$Test,levels = c('Train','Test','Loss'))
+ggplot(HistResLong, aes(x = Model,y = Result)) +
+  geom_bar(stat = "identity",position = "dodge") +
+  facet_grid(Test~Predictor)+
+  ggtitle('Gradient Boost Results')
+HistParRes <- data.frame(Model = Model[1:4],Accuracy = hist_partial)
+ggplot(HistParRes,aes(x = Model,y = Accuracy))+
+  geom_bar(stat = 'identity')+
+  ggtitle(label = 'Gradient boost partial accuracy')+
+  ylab('Accuracy (%)')
+```
+
+
+Lets try to visualize the data using like a PCA or something.
+
+```{r}
+
+Motif.present.dist <- dist(as.matrix(Motif.Number.Anno[6:ncol(Motif.Number.Anno)]))
+head(Motif.present.dist)
+heatmap(as.matrix(Motif.present.dist))
+
+fit <- cmdscale(Motif.present.dist,eig=TRUE, k=2) # k is the number of dim
+fit # view results
+
+# plot solution
+x <- fit$points[,1]
+y <- fit$points[,2]
+cols <- rainbow(length(unique(Motif.Number.Anno$map_id)))[unique(Motif.Number.Anno$map_id) %in% Motif.Number.Anno$map_id]
+plot(x, y, xlab="Coordinate 1", ylab="Coordinate 2",
+  main="Metric MDS",col = cols)
+```
+
+
+
+```{r}
+require(cluster)
+d <- daisy(as.matrix(Motif.Number.Anno[6:ncol(Motif.Number.Anno)]),metric = "manhattan")
+fit <- hclust(d = d, method = "complete")
+hclusters <- as.data.frame(cutree(fit,k = 10))
+hclusters.list <- lapply(split(hclusters,hclusters[,1]),function(x) x <- rownames(x))
+plot(fit)
+kfit <- kmeans(d,centers = 100)
+clusplot(as.matrix(d),kfit$cluster)#,color = T, shadel = T,labels = 2, lines = 0)
+
+md <- cmdscale(d,eig = T,k = 2)
+x <- md$points[,1]
+y <- md$points[,2]
+cols <- rainbow(length(unique(Motif.Number.Anno$map_id)))[ match(Motif.Number.Anno$map_id,unique(Motif.Number.Anno$map_id))]
+plot(x, y, xlab="Coordinate 1", ylab="Coordinate 2",
+  main="Metric MDS",col = cols)
+
+
+
+```
+
+Lets do this pca thing real quick
+
+```{r}
+testmat <- as.matrix(Nodes.Number.Anno[6:ncol(Nodes.Number.Anno)])
+# tm.mean <- apply(testmat,2,function(x) x - mean(x))
+# tm.norm <- tm.mean/norm(tm.mean)
+# pca <- pcoa(d)
+# plot(pca$vectors[,1],pca$vectors[,2],col = cols)
+pca2 <- prcomp(t(testmat),scale = F)
+plot(pca2$rotation[,1],pca2$rotation[,2],col = cols,main = "Nodes.Number PCA")
+```
+
+
+So d is in fact what we need to cluster, I am afraid that the MDS isn't very high, worrying how that is going to affect the clustering of motifs. 
+
+Let's write a function that will take a list of clusters and assess for accuraccy and other aspects for each of the four prediction types
+- EC voting highest
+- Map voting hights
+- Map partial all
+- Map partial common
+
+
+```{r}
+library(caret)
+analyzeCluster <- function(list,train,test) {
+  df <- data.frame()
+  for(l in list) {
+    testgenes <- test[test$gene_id %in% unlist(l),]
+    if(nrow(testgenes)==0){ 
+      next; 
+    }
+    traingenes <- train[train$gene_id %in% unlist(l),]
+    if(nrow(traingenes)==0){ 
+      next; 
+    }
+    trainec <- traingenes$ec_id
+    trainmap <- traingenes$map_id
+    voteec <- names(sort(table(trainec),decreasing=TRUE))[1]
+    votemap <- names(sort(table(trainmap),decreasing=TRUE))[1]
+    indmaps <- lapply(stri_extract_all_regex(trainmap, "(?<=').*?(?=')"),function(x) x[c(T,F)])
+    for(i in 1:length(indmaps)) { 
+      if(is.na(indmaps[i][1])) { indmaps[i][1] <- gsub("]","",gsub("\\[","",trainmap[i]))}
+    }
+    allmap <- unique(unlist(indmaps))
+    mapfreq <- as.data.frame(table(unlist(lapply(indmaps,function(x) unique(x)))))
+    over100 <- as.character(mapfreq$Var1[which(((mapfreq$Freq / nrow(train)) >= 1))])
+    over75 <- as.character(mapfreq$Var1[which(((mapfreq$Freq / nrow(train)) > .75))])
+    overhalf <- as.character(mapfreq$Var1[which(((mapfreq$Freq / nrow(train)) > .5))])
+    over25 <- as.character(mapfreq$Var1[which(((mapfreq$Freq / nrow(train)) > .25))])
+    
+    
+    for(i in 1:nrow(testgenes)) {
+      # print(i)
+      row <- testgenes[i,]
+      testmapids <- unlist(stri_extract_all_regex(row$map_id, "(?<=').*?(?=')"))[c(T,F)]
+      partial <- length(intersect(testmapids,unlist(stri_extract_all_regex(votemap, "(?<=').*?(?=')"))[c(T,F)]))
+      compl <- length(intersect(testmapids,allmap))/length(testmapids)
+      if(nrow(traingenes) == 1) { doubleton <- traingenes$gene_id[1] } else { doubleton <- NA }
+      d <- data.frame(gene_id = row$gene_id,trueEC = row$ec_id, trueMap = row$map_id,predEC = voteec,predMap = votemap,
+                      ec_acc = row$ec_id == voteec,map_acc = row$map_id == votemap,
+                      clust_compl = compl ,partial = partial,num_maps = length(testmapids),ntrain = nrow(traingenes),ntest = nrow(testgenes),doubleton = doubleton)
+      df <- rbind(df,d)
+    }
+  }
+  
+  return(df)
+}
+
+
+```
+
+```{r}
+clustFun.sizes <- function(mat,train,test) {
+  clustsizes <- c(5,10,50,100,125,150,200,250,300,350,400,500,600,700,800)
+
+
+  d <- daisy(mat,metric = "gower") #distance for motif present first
+  fit <- hclust(d = d, method = "complete")
+  df <- data.frame(NULL)
+  for (x in clustsizes){
+    print(x)
+    hclusters <- as.data.frame(cutree(fit,k = x))
+    hclusters.list <- lapply(split(hclusters,hclusters[,1]),function(x) x <- rownames(x))
+    kfit <- kmeans(d,centers = x)
+    kclusters <- as.data.frame(kfit$cluster)
+    kmeans.list <- lapply(split(kclusters,kclusters[,1]),function(x) x <- rownames(x))
+    hclust.res <- analyzeCluster(hclusters.list,train,test)
+    kclust.res <- analyzeCluster(kmeans.list,train,test)
+    hdf <- data.frame(clustSize = x,
+               method = "hclust",
+               ec = (sum(hclust.res$ec_acc,na.rm = T)/nrow(test))*100,
+               map = (sum(hclust.res$map_acc,na.rm = T)/nrow(test))*100,
+               partial = (sum(hclust.res$partial)/sum(hclust.res$num_maps))*100,
+               avg_compl = mean(hclust.res$clust_compl))
+    kdf <- data.frame(clustSize = x,
+               method = "kmeans",
+               ec = (sum(kclust.res$ec_acc,na.rm = T)/nrow(test))*100,
+               map = (sum(kclust.res$map_acc,na.rm = T)/nrow(test))*100,
+               partial = (sum(kclust.res$partial)/sum(kclust.res$num_maps))*100,
+               avg_compl = mean(kclust.res$clust_compl))
+    df <- rbind(df,hdf,kdf)
+  }
+  return(df)
+  
+}
+```
+
+
+A future project could exist in motif clustering and enrichment methods but I don't have time to that now let's plug it in and do the hclust and kmeans results gathering.
+
+```{r}
+########First set up the training data, use motif numbers first
+usable <- info[!info$map_id %in% c("","NAN"),]
+random <- usable[sample(1:nrow(usable)),]
+train <- random[1:floor(nrow(random) *.75),]
+test <- random[(floor(nrow(random) *.75)+1):nrow(random),]
+
+
+##########Now that we have the sets lets run through the motif present and number first
+#########There are 800 ecs and 330 maps so we can do up to 800 clusters, lets do 10,50,100,200,300,400,600,800
+mn <- as.matrix(Motif.Number.Anno[6:ncol(Motif.Number.Anno)])
+mp <- as.matrix(Motif.Present.Anno[6:ncol(Motif.Present.Anno)]) * 1
+nn <- as.matrix(Nodes.Number.Anno[6:ncol(Nodes.Number.Anno)])
+np <- as.matrix(Nodes.Present.Anno[6:ncol(Nodes.Present.Anno)]) * 1
+Motif.Present.clust <- clustFun.sizes(mp,train,test)
+Motif.Number.clust <- clustFun.sizes(mn,train,test)
+Nodes.Present.clust <- clustFun.sizes(np,train,test)
+Nodes.Number.clust <- clustFun.sizes(nn,train,test)
+
+Motif.Present.clust
+Motif.Number.clust
+Nodes.Present.clust
+Nodes.Number.clust
+clust.df <- rbind(within(within(Motif.Present.clust,model <- rep("Motif_present",nrow(Motif.Present.clust))),perc_missing <- (1 - Motif.Present.clust$avg_compl)),
+                  within(within(Motif.Number.clust,model <- rep("Motif_number",nrow(Motif.Number.clust))),perc_missing <- (1 - Motif.Number.clust$avg_compl)),
+                  within(within(Nodes.Present.clust,model <- rep("Nodes_present",nrow(Nodes.Present.clust))),perc_missing <- (1 - Nodes.Present.clust$avg_compl)),
+                  within(within(Nodes.Number.clust,model <- rep("Nodes_number",nrow(Nodes.Number.clust))),perc_missing <- (1 - Nodes.Number.clust$avg_compl)))
+clust.df.long <- clust.df %>% 
+  gather(variable,result,-clustSize,-method,-model)
+clust.df.long$variable <- factor(clust.df.long$variable,levels = c("ec","map","partial","perc_missing","avg_compl"))
+
+ggplot(clust.df.long[clust.df.long$variable != "avg_compl",],aes(x = clustSize,y = result,color = model))+
+  geom_line(lwd = 1) +
+  facet_grid(variable~method,scales = "free")
+
+#Lets also get them into tables for the accuracay graphy
+df700 <- subset(clust.df.long,clustSize == 700 & variable %in% c("ec","map","partial"))
+kmdf <- subset(df700,method == "kmeans")
+hcdf <- subset(df700,method == "hclust")
+kmdf$method <- rep("KMeans",12)
+kmdf$variable <- c(rep("EC_ID",4),rep("Map_ID_combined",4),rep("Map_ID_individual",4))
+colnames(kmdf) <- c("clustS","Model","Method","Predictor","Result")
+kmdf
+hcdf$method <- rep("HClust",12)
+hcdf$variable <- c(rep("EC_ID",4),rep("Map_ID_combined",4),rep("Map_ID_individual",4))
+colnames(hcdf) <- c("clustS","Model","Method","Predictor","Result")
+hcdf
+
+
+#We might be able to calculate confusion matrices using the caret package confusionmatrix() function but we would need the predicted set and the test labels from the previous function and be able to set the 
+```
+
+```{r}
+require(caret)
+
+
+calcClust <- function(mat,train,test,method) {
+  d <- daisy(mat,metric = "gower") #distance for motif present first
+  startt <- Sys.time()
+  fit <- hclust(d = d, method = "complete")
+  hclusters <- as.data.frame(cutree(fit,k = 700))
+  hclusters.list <- lapply(split(hclusters,hclusters[,1]),function(x) x <- rownames(x))
+  htime <- as.numeric(Sys.time() - startt)
+  startt <- Sys.time()
+  kfit <- kmeans(d,centers = 700)
+  kclusters <- as.data.frame(kfit$cluster)
+  kmeans.list <- lapply(split(kclusters,kclusters[,1]),function(x) x <- rownames(x))
+  ktime <- as.numeric(Sys.time() - startt)
+  # print(length(hclusters.list))
+  hclust.res <- analyzeCluster(hclusters.list,train,test)
+  kclust.res <- analyzeCluster(kmeans.list,train,test)
+  
+  if (nrow(hclust.res) < 1) {
+    hdf <- data.frame(Model = rep("HClust",3),Result = c(0,0,0), Loss = c(NA,NA,NA),TP = rep(NA,3),FP = rep(NA,3), FN = rep(NA,3), TN = rep(NA,3), Time = rep(htime,3),Method = rep(method,3), Predictor = c('ec_id','map_id','partial'))
+  } else {
+  # print(dim(hclust.res))
+  ecm <- as.matrix(with(hclust.res,table(trueEC,predEC)))
+  mcm <- as.matrix(with(hclust.res,table(trueMap,predMap)))
+  etp <- diag(ecm)
+  efp <- as.numeric(colSums(ecm)) - etp
+  efn <- as.numeric(rowSums(ecm))-etp
+  etn <- sum(ecm) - etp - efp - efn
+  mtp <- diag(mcm)
+  mfp <- as.numeric(colSums(mcm)) - mtp
+  mfn <- as.numeric(rowSums(mcm))-mtp
+  mtn <- sum(mcm) - etp - mfp - mfn
+  miss <- nrow(test[test$gene_id %in% hclust.res$gene_id,])/nrow(test)
+  print(miss)
+  
+  hdf <- data.frame(Model = rep("HClust",3),
+                    Result = c((sum(hclust.res$ec_acc,na.rm = T)/nrow(test))*100,(sum(hclust.res$map_acc,na.rm = T)/nrow(test))*100, sum(hclust.res$partial)/(sum(hclust.res$num_maps))*100*miss),
+                    Loss = c(NA,NA,NA),
+                    TP = c(mean(etp),mean(mtp),NA),
+                    FP = c(mean(efp),mean(mfp),NA),
+                    FN = c(mean(efn),mean(mfn),NA),
+                    TN = c(mean(etn),mean(mtn),NA),
+                    Time = rep(htime,3),
+                    Method = rep(method,3),
+                    Predictor = c('ec_id','map_id','partial'))
+  }
+  
+  if ( nrow(kclust.res) < 1) {
+    kdf <- data.frame(Model = rep("KMeans",3),Result = c(0,0,0), Loss = c(NA,NA,NA),TP = rep(NA,3),FP = rep(NA,3), FN = rep(NA,3), TN = rep(NA,3), Time = rep(htime,3),Method = rep(method,3), Predictor = c('ec_id','map_id','partial'))
+  } else {
+  ecm <- as.matrix(with(kclust.res,table(trueEC,predEC)))
+  mcm <- as.matrix(with(kclust.res,table(trueMap,predMap)))
+  etp <- diag(ecm)
+  efp <- as.numeric(colSums(ecm)) - etp
+  efn <- as.numeric(rowSums(ecm))-etp
+  etn <- sum(ecm) - etp - efp - efn
+  mtp <- diag(mcm)
+  mfp <- as.numeric(colSums(mcm)) - mtp
+  mfn <- as.numeric(rowSums(mcm))-mtp
+  mtn <- sum(mcm) - etp - mfp - mfn
+  miss <- nrow(test[test$gene_id %in% kclust.res$gene_id,])/nrow(test)
+  print(miss)
+  
+  kdf <- data.frame(Model = rep("KMeans",3),
+                    Result = c((sum(kclust.res$ec_acc,na.rm = T)/nrow(test))*100,(sum(kclust.res$map_acc,na.rm = T)/nrow(test))*100,sum(kclust.res$partial)/(sum(kclust.res$num_maps))*100*miss),
+                    Loss = c(NA,NA,NA),
+                    TP = c(mean(etp),mean(mtp),NA),
+                    FP = c(mean(efp),mean(mfp),NA),
+                    FN = c(mean(efn),mean(mfn),NA),
+                    TN = c(mean(etn),mean(mtn),NA),
+                    Time = rep(htime,3),
+                    Method = rep(method,3),
+                    Predictor = c('ec_id','map_id','partial'))
+  }
+  return(rbind(hdf,kdf))
+}
+
+mn_calc <- calcClust(mn,train,test,'Motif_number')
+mp_calc <- calcClust(mp,train,test,'Motif_present')
+nn_calc <- calcClust(nn,train,test,'Nodes_number')
+np_calc <- calcClust(np,train,test,'Nodes_present')
+
+clust_calc <- rbind(mn_calc,mp_calc,nn_calc,np_calc)
+clust_calc
+```
+
+Now we have the cdhit results so read those in
+
+```{r}
+cdhit50 <- read.csv(file = "~/LuberLab/crispri/EcoBisTest/cd_hit_cluster1.csv",header = T,sep = ",")
+head(cdhit50)
+cdhitlist <- split(cdhit50,cdhit50$cluster_no)
+hist(unlist(lapply(cdhitlist,function(x) nrow(x))))
+cd.list <- lapply(cdhitlist,function(x) x$gene_id)
+
+
+calcCdhit <- function(list,train,test,method) {
+  hclust.res <- analyzeCluster(list,train,test)
+  ecm <- as.matrix(with(hclust.res,table(trueEC,predEC)))
+  mcm <- as.matrix(with(hclust.res,table(trueMap,predMap)))
+  etp <- diag(ecm)
+  efp <- as.numeric(colSums(ecm)) - etp
+  efn <- as.numeric(rowSums(ecm))-etp
+  etn <- sum(ecm) - etp - efp - efn
+  mtp <- diag(mcm)
+  mfp <- as.numeric(colSums(mcm)) - mtp
+  mfn <- as.numeric(rowSums(mcm))-mtp
+  mtn <- sum(mcm) - etp - mfp - mfn
+  miss <- nrow(test[test$gene_id %in% hclust.res$gene_id,])/nrow(test)
+  print(miss)
+  
+  hdf <- data.frame(Model = rep("CD-hit",3),
+                    Result = c((sum(hclust.res$ec_acc,na.rm = T)/nrow(test))*100,(sum(hclust.res$map_acc,na.rm = T)/nrow(test))*100, sum(hclust.res$partial)/(sum(hclust.res$num_maps))*100*miss),
+                    Loss = c(NA,NA,NA),
+                    TP = c(mean(etp),mean(mtp),NA),
+                    FP = c(mean(efp),mean(mfp),NA),
+                    FN = c(mean(efn),mean(mfn),NA),
+                    TN = c(mean(etn),mean(mtn),NA),
+                    Time = rep(NA,3),
+                    Method = rep(method,3),
+                    Predictor = c('ec_id','map_id','partial'))
+  return(hdf)
+}
+
+cdhitres <- calcCdhit(cd.list,train,test,"none")
+cdhitres$Time <- rep(23.91,3)
+cdhitres
+```
+
+
+Lets take all the accuracy data from all the models to this point and put them together in a nice publication ready figure.
+
+```{r}
+require(cowplot)
+models <- c(rep("RandomForest",12),rep("AdaBoost",12),rep("GradientBoost",12))
+# Accuracy.df <- data.frame(Model = models, Method = rep(rf_model,3),Predictor = c(rf_predictor,),Result = c(rf_acc,ada_test,ada_partial,hist_test,hist_partial))
+Accuracy.df <- within(rbind(EcobisRF.df,EcoBisAda.df,EcoBisHist.df),Model <- factor(models,levels = unique(models)))
+Accuracy.df <- rbind(Accuracy.df,hcdf[,c(3,4,5,2)],kmdf[,c(3,4,5,2)])
+Accuracy.df$Predictor[Accuracy.df$Predictor == "Map_ID_combined"] <- "Map_ID"
+Accuracy.df$Predictor[Accuracy.df$Predictor == "Map_ID_individual"] <- "Partial Map_ID"
+
+ggplot(Accuracy.df,aes(x = Model,y = Result,fill = Method)) +
+  geom_bar(stat = "identity",position = "dodge") +
+  facet_wrap(~Predictor,ncol = 1,scale = 'free') +
+  scale_y_continuous(expand = c(0,0)) +
+  ylab(label = "Accuracy (%)") +
+  theme_cowplot()
+
+#add in the cdhit results
+accuracy.df.new <- Accuracy.df
+accuracy.df.new$Predictor <- rep(c(rep("ec_id",4),rep("map_id",4),rep("partial",4)),5)  
+resdf.plot <- rbind(subset(accuracy.df.new,!Model %in% c("KMeans","HClust")),cdhitres[,c("Method","Predictor","Result","Model")],clust_calc[,c("Method","Predictor","Result","Model")])
+
+ggplot(resdf.plot,aes(x = Model,y = Result,fill = Method)) +
+  geom_bar(stat = "identity",position = position_dodge2(preserve = "single")) +
+  facet_wrap(~Predictor,ncol = 1,scale = 'free') +
+  scale_y_continuous(expand = c(0,0)) +
+  ylab(label = "Accuracy (%)") +
+  theme_cowplot()
+```
+
+Lets check out the final table that we generated from the ensemble methods which will have several metrics:
+- Accuracy (%)
+- Log Loss
+- False Positives
+- False Negatives
+- True Positives
+- True Negatives
+- Time
+
+```{r}
+require(ggbreak)
+
+training_results_ensemble <- read.table(file = "~/LuberLab/crispri/EcoBisTest/Training_results_Ensemble.csv",header = T,sep = ",",stringsAsFactors = F)
+training_results_ensemble
+
+trainres_combined <- rbind(training_results_ensemble[,-1],clust_calc,cdhitres)
+trainres_combined
+trainres_combined$Model <- factor(trainres_combined$Model,levels = c("Random Forest","Ada Boosting","Gradient Boosting","HClust","KMeans","CD-hit"))
+
+#replot accuracy graph
+ggplot(trainres_combined,aes(x = Model,y = Result,fill = Method)) +
+  geom_bar(stat = "identity",position = "dodge") +
+  facet_wrap(~Predictor,ncol = 1,scale = 'free') +
+  scale_y_continuous(expand = c(0,0)) +
+  ylab(label = "Accuracy (%)") +
+  theme_cowplot()
+
+font = 10
+a <- ggplot(trainres_combined,aes(x = Model,y = Time, fill = Method)) +
+  geom_bar(stat = "summary",fun = "mean",position = position_dodge2(preserve = "single")) +
+  scale_y_continuous(expand = c(0,0),breaks = c(0,.25,.5,20,40,60,200,220,240,260,1400,1600)) +
+  scale_y_break(breaks = c(.5,15),scale = 2) +#
+  scale_y_break(breaks = c(70,200),scale = 2) +#
+  scale_y_break(breaks = c(260,1400),scale = .5) +#
+  ylab(label = "Time (s)") +
+  xlab(label = element_blank()) +
+  theme_cowplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1,size = font))
+
+tc_fpr <- within(subset(trainres_combined,Predictor != "partial" & Model != "CD-hit"), FPR <- FP/(FP + TN) * 100)
+
+b <- ggplot(tc_fpr,aes(x = Model,y = FPR,fill = Method)) +
+  geom_bar(stat = "summary",fun = "mean",position = "dodge") +
+  scale_y_continuous(expand = c(0,0),limits = c(0,2)) +
+  ylab(label = "False Positive Rate (%)") + 
+  xlab(label = element_blank()) +
+  theme_cowplot()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1,size = font))
+
+tc_loss <- trainres_combined[!is.na(trainres_combined$Loss),]
+
+c <- ggplot(tc_loss,aes(x = Model,y = Loss, fill = Predictor)) +
+  geom_bar(stat = "identity",position = "dodge") +
+  scale_y_continuous(expand = c(0,0)) +
+  facet_wrap(~Method,scale = "free",ncol = 2) +
+  ylab(label = "Log Loss") + 
+  theme_cowplot()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1,size = font))
+
+tc_pre <- within(within(subset(trainres_combined,Predictor != "partial" & Model != "CD-hit"), Precision <- TP/(TP + FP) * 100), Recall <- TP/(TP+FN))
+tc_prestack <- tc_pre[,c(1,9,10,11,12)] %>% 
+  gather(Metric,Result,-Model,-Predictor,- Method)
+
+d <- ggplot(tc_prestack,aes(x = Model,y = Result, fill = Method)) +
+  geom_bar(stat = "identity",position = "dodge") +
+  scale_y_continuous(expand = c(0,0)) +
+  facet_grid(Metric ~ Predictor,scale = "free") +
+  ylab(label = "Recall (%)         Precision (%)") +
+  theme_cowplot()+
+  theme(axis.title.y = element_text(size = font +2), axis.text.x = element_text(angle = 45, hjust = 1,size = font))
+
+ggarrange(print(a),b,c,d,
+          labels = c("A", "B", "C","D"),
+          ncol = 2, nrow = 2)
+
+```
+
+
+<!-- #     # Sensitivity, hit rate, recall, or true positive rate -->
+<!-- #     TPR = TP/(TP+FN) -->
+<!-- #     # Specificity or true negative rate -->
+<!-- #     TNR = TN/(TN+FP)  -->
+<!-- #     # Precision or positive predictive value -->
+<!-- #     PPV = TP/(TP+FP) -->
+<!-- #     # Negative predictive value -->
+<!-- #     NPV = TN/(TN+FN) -->
+<!-- #     # Fall out or false positive rate -->
+<!-- #     FPR = FP/(FP+TN) -->
+<!-- #     # False negative rate -->
+<!-- #     FNR = FN/(TP+FN) -->
+<!-- #     # False discovery rate -->
+<!-- #     FDR = FP/(TP+FP) -->
+
+<!-- #     # Overall accuracy -->
+<!-- #     ACC = (TP+TN)/(TP+FP+FN+TN) -->
+
+
+
+#Species Test
+Now let's take in a new species and process them in the same way as the other species to serve as a test. smn is the annotation data for Streptococcus macedonicus
+
+```{r}
+smn <- read.csv(file = "~/LuberLab/crispri/EcoBisTest/smn_latest.csv",header = T,sep = ",",stringsAsFactors = F)
+head(smn)
+print('Ko annotated')
+nrow(subset(smn,ko_id != ""))/nrow(smn)
+print('ec annotated')
+nrow(subset(smn,ec_id != ""))/nrow(smn)
+print('map annotated')
+nrow(subset(smn,!map_id %in% c("","NAN")))/nrow(smn) #great, doesnt have mapids
+
+
+smn.features <- subset(smn,!map_id %in% c("","NAN"))
+smn.feature.prot <- AAStringSet(gsub("\n","",smn.features$aaseq))
+names(smn.feature.prot) <- smn.features$gene_id
+smn.feature.prot
+writeXStringSet(x = smn.feature.prot,filepath = "~/LuberLab/crispri/EcoBisTest/SMN_Prot.fa",format = "fasta")
+
+```
+
+Let us rerun fimo to predict motifs in our species:
+
+```{r}
+smn.fimo <- read.table(file = "~/LuberLab/crispri/EcoBisTest/smn_fimo.out",header = T,sep = "\t",stringsAsFactors = F)
+head(smn.fimo)
+
+Motif.Present.smn <- hitTable(smn.fimo,present = T)
+Motif.Number.smn <- hitTable(smn.fimo,present = F)
+head(Motif.Number.smn)
+head(Motif.Present.smn)
+
+nodemotifs <- nodeList(flattree,fimo)
+Node.Present.smn <- nodeTable(nodemotifs,smn.fimo,present = T)
+Node.Present.smn[1:10,1:10]
+hist(apply(Node.Present.smn,1, function(x) sum(x)),main = "Nodes per gene")
+hist(apply(Node.Present.smn,2, function(x) sum(x)),main = "Genes per node")
+
+Node.Number.smn <- nodeTable(nodemotifs,smn.fimo,present = F)
+ten(Node.Number.smn)
+```
+
+And attach the annotation information then save the tables.
+
+```{r}
+subinfo <- smn.features[,c(1,3,4,8,9)]
+replace <- subinfo[subinfo$gene_id %in% rownames(Motif.Number.smn),]
+rownames(replace) <- replace$gene_id
+Motif.Number.smn.Anno <- cbind(replace,Motif.Number.smn[replace$gene_id,])
+#####Now do the motif present
+replace <- subinfo[subinfo$gene_id %in% rownames(Motif.Present.smn),]
+rownames(replace) <- replace$gene_id
+Motif.Present.smn.Anno <- cbind(replace,Motif.Present.smn[replace$gene_id,])
+
+Motif.Present.smn.Anno[1:10,1:10]
+Motif.Number.smn.Anno[1:10,1:10]
+
+
+######Now for the node data
+replace <- subinfo[subinfo$gene_id %in% rownames(Node.Number.smn),]
+rownames(replace) <- replace$gene_id
+Nodes.Number.smn.Anno <- cbind(replace,Node.Number.smn[replace$gene_id,])
+#########And Node Present
+replace <- subinfo[subinfo$gene_id %in% rownames(Node.Present.smn),]
+rownames(replace) <- replace$gene_id
+Nodes.Present.smn.Anno <- cbind(replace,Node.Present.smn[replace$gene_id,])
+
+ten(Nodes.Number.smn.Anno)
+ten(Nodes.Present.smn.Anno)
+# write.table(Motif.Present.smn.Anno,file = "./EcoBisTest/SMN_Test/Motif_Present_smn.tsv",sep = "\t",quote = F,row.names = F)
+# write.table(Motif.Number.smn.Anno,file = "./EcoBisTest/SMN_Test/Motif_Number_smn.tsv",sep = "\t",quote = F,row.names = F)
+# write.table(Nodes.Present.smn.Anno,file = "./EcoBisTest/SMN_Test/Nodes_Present_smn.tsv",sep = "\t",quote = F,row.names = F)
+# write.table(Nodes.Number.smn.Anno,file = "./EcoBisTest/SMN_Test/Nodes_Number_smn.tsv",sep = "\t",quote = F,row.names = F)
+```
+
+
+Let us rerun the clustering analysis using the new test data.
+
+```{r}
+
+usable <- info[!info$map_id %in% c("","NAN"),]
+train <- usable
+test <- smn.features
+
+
+
+mn <- as.matrix(rbind(Motif.Number.Anno[,6:ncol(Motif.Number.Anno)],Motif.Number.smn.Anno[,6:ncol(Motif.Number.smn.Anno)][,colnames(Motif.Number.Anno)[6:ncol(Motif.Number.Anno)]]))
+mp <- as.matrix(rbind(Motif.Present.Anno[,6:ncol(Motif.Present.Anno)],Motif.Present.smn.Anno[,6:ncol(Motif.Present.smn.Anno)][,colnames(Motif.Present.Anno)[6:ncol(Motif.Present.Anno)]])) * 1
+nn <- Nodes.Number.Anno[,6:ncol(Nodes.Number.Anno)]
+nn_smn <- Nodes.Number.smn
+colnames(nn_smn) <- colnames(nn)
+nn <- as.matrix(rbind(nn,nn_smn))
+np <- Nodes.Present
+np_smn <- Nodes.Present.smn.Anno[6:ncol(Nodes.Present.smn.Anno)]
+colnames(np_smn) <- colnames(np)
+np <- as.matrix(rbind(np,np_smn)) * 1
+
+  
+mn_calc_smn <- calcClust(mn,train,test,'Motif_number')
+mp_calc_smn <- calcClust(mp,train,test,'Motif_present')
+nn_calc_smn <- calcClust(nn,train,test,'Nodes_number')
+np_calc_smn <- calcClust(np,train,test,'Nodes_present')
+
+test_clust_calc <- rbind(mn_calc_smn,mp_calc_smn,nn_calc_smn,np_calc_smn)
+test_clust_calc
+```
+
+That looks good, this shows that the clustering does not generalize well with new data for the node information which is what we expected. Read in the test from cd hit:
+
+```{r}
+smn_cdhit <- read.table(file = "./EcoBisTest/bis_eco_smn_t50.csv",header = T,sep = ",",stringsAsFactors = F)
+head(smn_cdhit)
+cdhitlist <- split(smn_cdhit,smn_cdhit$cluster_no)
+hist(unlist(lapply(cdhitlist,function(x) nrow(x))))
+cd.list <- lapply(cdhitlist,function(x) x$gene_id)
+
+
+cdhitres <- calcCdhit(cd.list,train,test,"none")
+cdhitres$Time <- rep(23.91,3)
+cdhitres
+```
+
+Lets also do blast alignment of the smn to the ecobis and see about accuracy with that.
+blastp -subject ./ecobisProt.fa -query ./SMN_Prot.fa -out ./smn_blast.out -outfmt 6 -num_threads 12
+sort -k1,1 -k12,12gr -k11,11g -k3,3gr smn_blast.out | sort -u -k1,1 --merge > smn_blast.sorted.out
+```{r}
+smn.blast <- read.table(file = "./EcoBisTest/smn_blast.sorted.out",header = F,sep = "\t")
+head(smn.blast)
+smn.blast.merge <- cbind(smn.blast[,c(1,2)],info[match(smn.blast$V2,info$gene_id),c(1,3,7)])
+smn.sub <- smn.features[match(smn.blast$V1,smn.features$gene_id),c(4,9)]
+colnames(smn.sub) <- c("trueEC","trueMap")
+smn.blast.merge <- cbind(smn.blast.merge,smn.sub)
+
+(sum(with(smn.blast.merge, ec_id == trueEC))/nrow(smn.blast.merge))*100
+(sum(with(smn.blast.merge, map_id == trueMap))/nrow(smn.blast.merge))*100
+```
+
+
+Now read in the test results for the ensemble and then make a new accuracy plot.
+
+```{r}
+
+test_results_ensemble <- read.table(file = "~/LuberLab/crispri/EcoBisTest/Testing_results_Ensemble.csv",header = T,sep = ",",stringsAsFactors = F)
+test_results_ensemble
+
+# testres_combined <- rbind(test_results_ensemble[,-1],test_clust_calc,cdhitres)
+# testres_combined
+# testres_combined$Model <- factor(testres_combined$Model,levels = c("Random Forest","Ada Boosting","Gradient Boosting","HClust","KMeans","CD-hit"))
+
+ggplot(testres_combined,aes(x = Model,y = Result,fill = Method)) +
+  geom_bar(stat = "identity",position = position_dodge2(preserve = "single")) +
+  facet_wrap(~Predictor,ncol = 1,scale = 'free') +
+  scale_y_continuous(expand = c(0,0)) +
+  ylab(label = "Accuracy (%)") +
+  theme_cowplot()
+
+
+
+```
+
+
+
+pmbl stuff:
+
+```{r}
+hclust.test <- analyzeCluster(hclusters.list,train,test)
+cdhit.test <- analyzeCluster(cd.list,train,test)
+hist(unlist(lapply(hclusters.list,function(x) length(x))))
+hist(unlist(lapply(cd.list,function(x) length(x))))
+
+sub.hclust.test <- subset(hclust.test,gene_id %in% cdhit.test$gene_id)
+
+match <- match(cdhit.test$gene_id,hclust.test$gene_id)
+match <- match[!is.na(match)]
+sub.hclust.test <- hclust.test[match,]
+rbind(sub.hclust.test[sub.hclust.test$gene_id == "smn:SMA_0756",],cdhit.test[cdhit.test$gene_id == "smn:SMA_0756",])
+
+
+cdhit.test[cdhit.test$map_acc == F,]
+sub.hclust.test[sub.hclust.test$gene_id %in% cdhit.test[cdhit.test$map_acc == F,]$gene_id,]
+sub.hclust.test.perc <- within(sub.hclust.test,partialperc <- sub.hclust.test$partial / sub.hclust.test$num_maps)
+
+smn_gene <- smn.feature.prot["smn:SMA_0536"]
+as.character(ecobisProt[subset(info,ec_id == "ec:2.6.1.85")$gene_id])
+as.character(ecobisProt[subset(info,ec_id == "ec:2.4.1.129")$gene_id])
+as.character(ecobisProt[subset(info,ec_id == "ec:4.1.3.27")$gene_id])
+
+cdhit.test[cdhit.test$gene_id == "smn:SMA_1672",]
+sub.hclust.test.perc[sub.hclust.test.perc$gene_id == "smn:SMA_1672",]
+
+hclust.test[!is.na(hclust.test$doubleton),][3,]
+as.character(ecobisProt[subset(info,ec_id == "ec:2.7.1.4")$gene_id])
+```
+
+
+
+Lastly, lets throw in the results from the deep learning and generate the final figures.
+
+```{r}
+nn_acc <- c(3.26797E-02,6.53595E-02,2.83019E-01,3.27044E-01,3.92157E-02,5.22876E-02,2.20126E-01,3.20755E-01) * 100
+nn_methods <- c(rep(c("Motif_number","Motif_present","Nodes_number","Nodes_present"),3))
+nn_predictor <- c(rep("map_id",4),rep("ec_id",4),rep("partial",4))
+
+nn_part <- NULL
+filenames <- list.files("./EcoBisTest/tmp/",full.names = T)
+for (f in filenames[c(2,4,6,8)]) {
+  len <- 0
+  map <- 0
+  tmp <- read.table(f,header = T,sep = ",")
+  tlist <- lapply(apply(tmp,1,function(x) stri_extract_all_regex(x[3], "(?<=').*?(?=')")),function(p) p[[1]][c(T,F)])
+  plist <- lapply(apply(tmp,1,function(x) stri_extract_all_regex(x[4], "(?<=').*?(?=')")),function(p) p[[1]][c(T,F)])
+  for(t in 1:length(tlist)) { if(is.na(tlist[[t]])) { tlist[t] <- tmp[t,3] } }
+  for(p in 1:length(plist)) { if(is.na(plist[[p]])) { plist[p] <- tmp[t,4] } }
+  for(x in 1:length(tlist)) { len <-  len + length(na.omit(match(tlist[[x]],plist[[x]]))); map <- map + length(tlist[[x]]); }
+  nn_part <- c(nn_part,len/map * 100)
+}
+
+
+nn_acc_df <- data.frame(Method = nn_methods,Predictor = nn_predictor,Result = c(nn_acc,nn_part),Model = "NeuralNetwork")
+  
+accuracy.df.new <- Accuracy.df
+accuracy.df.new$Predictor <- rep(c(rep("ec_id",4),rep("map_id",4),rep("partial",4)),5)  
+resdf.plot <- rbind(subset(accuracy.df.new,!Model %in% c("KMeans","HClust")),cdhitres[,c("Method","Predictor","Result","Model")],clust_calc[,c("Method","Predictor","Result","Model")],nn_acc_df)
+resdf.plot[resdf.plot$Model == "CD-hit",]$Method <- "Sequence Alignment"
+resdf.plot[resdf.plot$Model == "CD-hit",]$Result <- c(11.61,11.61,11.8)
+
+font <- 14
+a <- ggplot(resdf.plot[resdf.plot$Predictor == "ec_id",],aes(x = Model,y = Result,fill = Method)) +
+  geom_bar(stat = "identity",position = position_dodge2(preserve = "single")) +
+  # facet_wrap(~Predictor,ncol = 1,scale = 'free') +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_fill_jco() +
+  ylab(label = "Accuracy (%)") +
+  theme_cowplot() +
+  theme(legend.position = "none",axis.title.y = element_text(size = font + 2),axis.title.x = element_blank(), axis.text.x = element_blank())
+b <- ggplot(resdf.plot[resdf.plot$Predictor == "map_id",],aes(x = Model,y = Result,fill = Method)) +
+  geom_bar(stat = "identity",position = position_dodge2(preserve = "single")) +
+  # facet_wrap(~Predictor,ncol = 1,scale = 'free') +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_fill_jco() +
+  ylab(label = "Accuracy (%)") +
+  theme_cowplot() + 
+  theme(axis.title.y = element_text(size = font +2),axis.title.x = element_blank(), axis.text.x = element_blank())
+c <- ggplot(resdf.plot[resdf.plot$Predictor == "partial",],aes(x = Model,y = Result,fill = Method)) +
+  geom_bar(stat = "identity",position = position_dodge2(preserve = "single")) +
+  # facet_wrap(~Predictor,ncol = 1,scale = 'free') +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_fill_jco() +
+  ylab(label = "Accuracy (%)") +
+  theme_cowplot() + 
+  theme(legend.position = "none",axis.title.y = element_text(size = font +2),axis.title.x = element_text(size = font + 2), axis.text.x = element_text(size = font))
+ggarrange(a,b,c,nrow = 3, ncol = 1,labels = c("A","B","C"),common.legend = T,legend = "top")
+
+
+
+
+
+
+
+```
+
+
+
+```{r}
+time <- c(151.5395314,160.8249473,165.1594658,116.6561357,158.8569671,154.0239394,155.4060952,160.8687727)
+filenames <- list.files("./EcoBisTest/tmp/",full.names = T)
+dat <- data.frame(FP = NULL,FN = NULL,TP = NULL, TN = NULL)
+for (f in filenames) {
+  tmp <- read.table(f,header = T,sep = ",")
+  ecm <- as.matrix(table(tmp[,3],tmp[,4]))
+  etp <- diag(ecm)
+  efp <- as.numeric(colSums(ecm)) - etp
+  efn <- as.numeric(rowSums(ecm))- etp
+  etn <- sum(ecm) - etp - efp - efn
+  dat <- rbind(dat,data.frame(FP = mean(efp),FN = mean(efn), TP = mean(etp), TN = mean(etn)))
+}
+nn_loss <- c(0.021488,0.021406,0.01829,0.018436,0.010354,0.010258,0.0087849,0.00864072)
+nn_df <- cbind(data.frame(Model = rep("NeuralNetwork",12),Result = c(nn_acc,nn_part),Loss = c(log(loss),rep(NA,4))),c(rbind(dat[c(2,4,6,8,1,3,5,7),c('FP','FN','TP','TN')],data.frame(FP = rep(NA,4),FN = rep(NA,4), TP = rep(NA,4), TN = rep(NA,4)))),data.frame(Time = c(time,time[5:8]),Method = nn_methods,Predictor = nn_predictor))
+
+
+trainres_all <- rbind(trainres_combined,nn_df)
+trainres_all[trainres_all$Method == "none",]$Method <- "Sequence Alignment"
+
+
+a <- ggplot(trainres_all,aes(x = Model,y = Time, fill = Method)) +
+  geom_bar(stat = "summary",fun = "mean",position = position_dodge2(preserve = "single")) +
+  scale_y_continuous(expand = c(0,0),breaks = c(0,.25,.5,20,40,60,150,200,250,1400,1600)) +
+  scale_y_break(breaks = c(.5,15),scale = 2) +#
+  scale_y_break(breaks = c(70,140),scale = 2) +#
+  scale_y_break(breaks = c(260,1400),scale = .5) +#
+  scale_fill_jco() +
+  ylab(label = "Time (s)") +
+  xlab(label = element_blank()) +
+  theme_cowplot() +
+  theme(axis.title.y = element_text(size = font +2),axis.title.x = element_text(size = font +2),axis.text.x = element_text(angle = 45, hjust = 1,size = font),legend.position = 'none')
+
+tc_fpr <- within(subset(trainres_all,Predictor != "partial"), FPR <- FP/(FP + TN) * 100)
+
+b <- ggplot(tc_fpr,aes(x = Model,y = FPR,fill = Method)) +
+  geom_bar(stat = "summary",fun = "mean",position = "dodge") +
+  scale_y_continuous(expand = c(0,0),limits = c(0,2)) +
+  scale_fill_jco() +
+  ylab(label = "False Positive Rate (%)") + 
+  xlab(label = element_blank()) +
+  theme_cowplot()+
+  theme(axis.title.y = element_text(size = font +2),axis.title.x = element_text(size = font +2),axis.text.x = element_text(angle = 45, hjust = 1,size = font))
+
+tc_loss <- trainres_all[!is.na(trainres_all$Loss) & trainres_all$Predictor != "partial",]
+
+c <- ggplot(tc_loss,aes(x = Model,y = Loss, fill = Method)) +
+  geom_bar(stat = "identity",position = "dodge") +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_fill_jco() +
+  facet_wrap(~Predictor,scale = "free",ncol = 2) +
+  ylab(label = "Log Loss") + 
+  theme_cowplot()+
+  theme(axis.title.y = element_text(size = font +2),axis.title.x = element_text(size = font +2),axis.text.x = element_text(angle = 45, hjust = 1,size = font))
+
+tc_pre <- within(within(subset(trainres_all,Predictor != "partial" & Model != "CD-hit"), Precision <- TP/(TP + FP) * 100), Recall <- TP/(TP+FN))
+tc_prestack <- tc_pre[,c(1,9,10,11,12)] %>% 
+  gather(Metric,Result,-Model,-Predictor,- Method)
+
+d <- ggplot(tc_prestack,aes(x = Model,y = Result, fill = Method)) +
+  geom_bar(stat = "identity",position = "dodge") +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_fill_jco() +
+  facet_grid(Metric ~ Predictor,scale = "free") +
+  ylab(label = "Recall (%)         Precision (%)") +
+  theme_cowplot()+
+  theme(axis.title.y = element_text(size = font +2),axis.title.x = element_text(size = font +2), axis.text.x = element_text(angle = 45, hjust = 1,size = font))
+
+ggarrange(print(a),b,c,d,
+          labels = c("A", "B", "C","D"),
+          ncol = 2, nrow = 2,common.legend = T,legend = "top")
+```
+
+```{r}
+require(ggsci)
+pal <- pal_jco()(5)
+
+smn_nn_res <- c(8.42697E-03,5.61798E-03,2.80899E-03,2.80899E-03,2.80899E-03,0.002808989,0.002808989,0.002808989) * 100
+smn_nn_part <- NULL
+filenames <- list.files("./EcoBisTest/smn_res_nn/",full.names = T)
+for (f in filenames[c(2,4,6,8)]) {
+  len <- 0
+  map <- 0
+  print(f)
+  tmp <- read.table(f,header = T,sep = ",")
+  tlist <- lapply(apply(tmp,1,function(x) stri_extract_all_regex(x[3], "(?<=').*?(?=')")),function(p) p[[1]][c(T,F)])
+  plist <- lapply(apply(tmp,1,function(x) stri_extract_all_regex(x[4], "(?<=').*?(?=')")),function(p) p[[1]][c(T,F)])
+  for(t in 1:length(tlist)) { if(is.na(tlist[[t]])) { tlist[t] <- tmp[t,3] } }
+  for(p in 1:length(plist)) { if(is.na(plist[[p]])) { plist[p] <- tmp[t,4] } }
+  for(x in 1:length(tlist)) { len <-  len + length(na.omit(match(tlist[[x]],plist[[x]]))); map <- map + length(tlist[[x]]); }
+  smn_nn_part <- c(nn_part,len/map * 100)
+  print(len)
+}
+smn_nn_part
+
+
+smn_nn_acc_df <- data.frame(Method = nn_methods,Predictor = nn_predictor,Result = c(smn_nn_res,smn_nn_part[1:4]),Model = rep("NeuralNetwork",12))
+  
+accuracy.df.new <- Accuracy.df
+accuracy.df.new$Predictor <- rep(c(rep("ec_id",4),rep("map_id",4),rep("partial",4)),5)  
+# resdf.plot <- rbind(subset(accuracy.df.new,!Model %in% c("KMeans","HClust")),cdhitres[,c("Method","Predictor","Result","Model")],clust_calc[,c("Method","Predictor","Result","Model")],smn_nn_acc_df)
+smndf.plot <- rbind(testres_combined[,c('Method','Predictor','Result','Model')],smn_nn_acc_df)
+smndf.plot[smndf.plot$Method == "none",]$Method <- "Sequence Alignment"
+
+font <- 11
+a <- ggplot(smndf.plot[smndf.plot$Predictor == "ec_id",],aes(x = Model,y = Result,fill = Method)) +
+  geom_bar(stat = "identity",position = position_dodge2(preserve = "single")) +
+  # facet_wrap(~Predictor,ncol = 1,scale = 'free') +
+  scale_y_continuous(expand = c(0,0),breaks = c(0,1,1.75,20,22)) +
+  scale_y_break(breaks = c(2,20),scale = .3) +
+  scale_fill_jco() +
+  ylab(label = "Accuracy (%)") +
+  theme_cowplot() +
+  theme(legend.position = "none",axis.title.y = element_text(size = font + 2),axis.title.x = element_blank(), axis.text.x = element_blank())
+b <- ggplot(smndf.plot[smndf.plot$Predictor == "map_id",],aes(x = Model,y = Result,fill = Method)) +
+  geom_bar(stat = "identity",position = position_dodge2(preserve = "single")) +
+  # facet_wrap(~Predictor,ncol = 1,scale = 'free') +
+  scale_y_continuous(expand = c(0,0),breaks = c(0,1,2,3,20,21)) +
+  scale_y_break(breaks = c(3.5,20),scale = .3) +
+  scale_fill_jco() +
+  ylab(label = "Accuracy (%)") +
+  theme_cowplot() +
+  theme(legend.position = "none",axis.title.y = element_text(size = font + 2),axis.title.x = element_blank(), axis.text.x = element_blank())
+c <- ggplot(smndf.plot[smndf.plot$Predictor == "partial",],aes(x = Model,y = Result,fill = Method)) +
+  geom_bar(stat = "identity",position = position_dodge2(preserve = "single")) +
+  # facet_wrap(~Predictor,ncol = 1,scale = 'free') +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_fill_jco() +
+  ylab(label = "Accuracy (%)") +
+  theme_cowplot() +
+  theme(legend.position = "none",axis.title.y = element_text(size = font +2),axis.title.x = element_text(size = font + 2), axis.text.x = element_text(size = font))
+ggarrange(print(a),print(b),c,nrow = 3, ncol = 1,labels = c("A","B","C"),common.legend = T,legend = "top")
+
+```
+
+
+
